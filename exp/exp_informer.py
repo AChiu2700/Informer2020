@@ -58,48 +58,45 @@ class Exp_Informer(Exp_Basic):
         return model
 
     def _get_data(self, flag):
-        args = self.args
-
+        print(f"Loading dataset: {self.args.data}")
+        print(f"Root path: {self.args.root_path}, Data path: {self.args.data_path}")
         data_dict = {
-            'ETTh1':Dataset_ETT_hour,
-            'ETTh2':Dataset_ETT_hour,
-            'ETTm1':Dataset_ETT_minute,
-            'ETTm2':Dataset_ETT_minute,
-            'WTH':Dataset_Custom,
-            'ECL':Dataset_Custom,
-            'Solar':Dataset_Custom,
-            'custom':Dataset_Custom,
+            'ETTh1': Dataset_ETT_hour,
+            'ETTh2': Dataset_ETT_hour,
+            'ETTm1': Dataset_ETT_minute,
+            'ETTm2': Dataset_ETT_minute,
+            'custom': Dataset_Custom,  # Add this if not already present
+            'indoor': Dataset_Custom,  # Add this for your dataset
         }
         Data = data_dict[self.args.data]
-        timeenc = 0 if args.embed!='timeF' else 1
+        timeenc = 0 if self.args.embed != 'timeF' else 1
 
         if flag == 'test':
-            shuffle_flag = False; drop_last = True; batch_size = args.batch_size; freq=args.freq
-        elif flag=='pred':
-            shuffle_flag = False; drop_last = False; batch_size = 1; freq=args.detail_freq
-            Data = Dataset_Pred
+            shuffle_flag = False; drop_last = True; batch_size = self.args.batch_size
+        elif flag == 'pred':
+            shuffle_flag = False; drop_last = False; batch_size = 1
         else:
-            shuffle_flag = True; drop_last = True; batch_size = args.batch_size; freq=args.freq
+            shuffle_flag = True; drop_last = True; batch_size = self.args.batch_size
+
         data_set = Data(
-            root_path=args.root_path,
-            data_path=args.data_path,
+            root_path=self.args.root_path,
+            data_path=self.args.data_path,
             flag=flag,
-            size=[args.seq_len, args.label_len, args.pred_len],
-            features=args.features,
-            target=args.target,
-            inverse=args.inverse,
+            size=[self.args.seq_len, self.args.label_len, self.args.pred_len],
+            features=self.args.features,
+            target=self.args.target,
+            scale=True,
             timeenc=timeenc,
-            freq=freq,
-            cols=args.cols
+            freq=self.args.freq,
+            cols=self.args.cols
         )
         print(flag, len(data_set))
         data_loader = DataLoader(
             data_set,
             batch_size=batch_size,
             shuffle=shuffle_flag,
-            num_workers=args.num_workers,
+            num_workers=self.args.num_workers,
             drop_last=drop_last)
-
         return data_set, data_loader
 
     def _select_optimizer(self):
@@ -132,7 +129,6 @@ class Exp_Informer(Exp_Basic):
             os.makedirs(path)
 
         time_now = time.time()
-        
         train_steps = len(train_loader)
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
         
@@ -150,7 +146,11 @@ class Exp_Informer(Exp_Basic):
             epoch_time = time.time()
             for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
-                
+
+                print(f"Epoch: {epoch + 1}, Iteration: {i + 1}")
+                print(f"batch_x shape: {batch_x.shape}, batch_x_mark shape: {batch_x_mark.shape}")
+                print(f"batch_y shape: {batch_y.shape}, batch_y_mark shape: {batch_y_mark.shape}")
+
                 model_optim.zero_grad()
                 pred, true = self._process_one_batch(
                     train_data, batch_x, batch_y, batch_x_mark, batch_y_mark)
@@ -255,21 +255,28 @@ class Exp_Informer(Exp_Basic):
         np.save(folder_path+'real_prediction.npy', preds)
         
         return
-
+    
     def _process_one_batch(self, dataset_object, batch_x, batch_y, batch_x_mark, batch_y_mark):
+        print(f"batch_x shape: {batch_x.shape}, batch_x_mark shape: {batch_x_mark.shape}")
+        print(f"batch_y shape: {batch_y.shape}, batch_y_mark shape: {batch_y_mark.shape}")
+
         batch_x = batch_x.float().to(self.device)
         batch_y = batch_y.float()
 
         batch_x_mark = batch_x_mark.float().to(self.device)
         batch_y_mark = batch_y_mark.float().to(self.device)
 
-        # decoder input
-        if self.args.padding==0:
+        # Debugging: Check the shape of x_mark
+        print(f"batch_x_mark shape after conversion: {batch_x_mark.shape}")
+
+        # Decoder input preparation
+        if self.args.padding == 0:
             dec_inp = torch.zeros([batch_y.shape[0], self.args.pred_len, batch_y.shape[-1]]).float()
-        elif self.args.padding==1:
+        elif self.args.padding == 1:
             dec_inp = torch.ones([batch_y.shape[0], self.args.pred_len, batch_y.shape[-1]]).float()
-        dec_inp = torch.cat([batch_y[:,:self.args.label_len,:], dec_inp], dim=1).float().to(self.device)
-        # encoder - decoder
+        dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
+
+        # Encoder-Decoder forward pass
         if self.args.use_amp:
             with torch.cuda.amp.autocast():
                 if self.args.output_attention:
@@ -281,9 +288,14 @@ class Exp_Informer(Exp_Basic):
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
             else:
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
+
+        # Optional inverse transformation
         if self.args.inverse:
             outputs = dataset_object.inverse_transform(outputs)
-        f_dim = -1 if self.args.features=='MS' else 0
-        batch_y = batch_y[:,-self.args.pred_len:,f_dim:].to(self.device)
 
+        # Target preparation
+        f_dim = -1 if self.args.features == 'MS' else 0
+        batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
+
+        print(f"outputs shape: {outputs.shape}, batch_y shape: {batch_y.shape}")
         return outputs, batch_y

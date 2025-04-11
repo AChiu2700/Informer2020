@@ -151,10 +151,13 @@ class Dataset_ETT_minute(Dataset):
         else:
             data = df_data.values
             
-        df_stamp = df_raw[['date']][border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+        # Process timestamps
+        df_stamp = df_raw[['timestamp']][border1:border2]
+        df_stamp['timestamp'] = pd.to_datetime(df_stamp['timestamp'], unit='s')
         data_stamp = time_features(df_stamp, timeenc=self.timeenc, freq=self.freq)
-        
+        print(f"Timestamp features shape: {data_stamp.shape}")  # Debugging statement
+        print(f"Timestamp features sample: {data_stamp[:5]}")  # Debugging statement
+
         self.data_x = data[border1:border2]
         if self.inverse:
             self.data_y = df_data.values[border1:border2]
@@ -187,10 +190,9 @@ class Dataset_ETT_minute(Dataset):
 
 class Dataset_Custom(Dataset):
     def __init__(self, root_path, flag='train', size=None, 
-                 features='S', data_path='ETTh1.csv', 
-                 target='OT', scale=True, inverse=False, timeenc=0, freq='h', cols=None):
+                 features='S', data_path='indoor_forward_10_davis_with_gt.txt', 
+                 target='tx', scale=True, inverse=False, timeenc=0, freq='h', cols=None):
         # size [seq_len, label_len, pred_len]
-        # info
         if size == None:
             self.seq_len = 24*4*4
             self.label_len = 24*4
@@ -199,6 +201,7 @@ class Dataset_Custom(Dataset):
             self.seq_len = size[0]
             self.label_len = size[1]
             self.pred_len = size[2]
+        
         # init
         assert flag in ['train', 'test', 'val']
         type_map = {'train':0, 'val':1, 'test':2}
@@ -210,58 +213,58 @@ class Dataset_Custom(Dataset):
         self.inverse = inverse
         self.timeenc = timeenc
         self.freq = freq
-        self.cols=cols
+        self.cols = cols
         self.root_path = root_path
         self.data_path = data_path
         self.__read_data__()
 
     def __read_data__(self):
+        print("Loading data...")  # Debugging statement
         self.scaler = StandardScaler()
-        df_raw = pd.read_csv(os.path.join(self.root_path,
-                                          self.data_path))
-        '''
-        df_raw.columns: ['date', ...(other features), target feature]
-        '''
-        # cols = list(df_raw.columns); 
-        if self.cols:
-            cols=self.cols.copy()
-            cols.remove(self.target)
-        else:
-            cols = list(df_raw.columns); cols.remove(self.target); cols.remove('date')
-        df_raw = df_raw[['date']+cols+[self.target]]
+        df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
+        print(f"Columns found: {df_raw.columns.tolist()}")  # Debugging statement
 
-        num_train = int(len(df_raw)*0.7)
-        num_test = int(len(df_raw)*0.2)
+        # Define train, validation, and test splits
+        num_train = int(len(df_raw) * 0.7)
+        num_test = int(len(df_raw) * 0.2)
         num_vali = len(df_raw) - num_train - num_test
-        border1s = [0, num_train-self.seq_len, len(df_raw)-num_test-self.seq_len]
-        border2s = [num_train, num_train+num_vali, len(df_raw)]
+        border1s = [0, num_train - self.seq_len, len(df_raw) - num_test - self.seq_len]
+        border2s = [num_train, num_train + num_vali, len(df_raw)]
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
-        
-        if self.features=='M' or self.features=='MS':
+
+        # Select features
+        if self.features == 'M' or self.features == 'MS':
             cols_data = df_raw.columns[1:]
             df_data = df_raw[cols_data]
-        elif self.features=='S':
+        elif self.features == 'S':
             df_data = df_raw[[self.target]]
 
+        # Scale data if required
         if self.scale:
             train_data = df_data[border1s[0]:border2s[0]]
             self.scaler.fit(train_data.values)
             data = self.scaler.transform(df_data.values)
         else:
-            data = df_data.values
-            
-        df_stamp = df_raw[['date']][border1:border2]
-        df_stamp['date'] = pd.to_datetime(df_stamp.date)
-        data_stamp = time_features(df_stamp, timeenc=self.timeenc, freq=self.freq)
+            data = df_data.values  # Ensure data is defined even if scaling is not applied
 
+        # Process timestamps
+        df_stamp = df_raw[['timestamp']][border1:border2]
+        df_stamp['timestamp'] = pd.to_datetime(df_stamp['timestamp'], unit='s')
+        data_stamp = time_features(df_stamp, timeenc=self.timeenc, freq=self.freq)
+        print(f"Timestamp features shape: {data_stamp.shape}")  # Debugging statement
+        print(f"Timestamp features sample: {data_stamp[:5]}")  # Debugging statement
+
+        # Assign data to class variables
         self.data_x = data[border1:border2]
         if self.inverse:
             self.data_y = df_data.values[border1:border2]
         else:
             self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
-    
+
+        print(f"Final shapes - X: {self.data_x.shape}, Y: {self.data_y.shape}, Stamp: {self.data_stamp.shape}")
+
     def __getitem__(self, index):
         s_begin = index
         s_end = s_begin + self.seq_len
@@ -270,7 +273,8 @@ class Dataset_Custom(Dataset):
 
         seq_x = self.data_x[s_begin:s_end]
         if self.inverse:
-            seq_y = np.concatenate([self.data_x[r_begin:r_begin+self.label_len], self.data_y[r_begin+self.label_len:r_end]], 0)
+            seq_y = np.concatenate([self.data_x[r_begin:r_begin+self.label_len], 
+                                  self.data_y[r_begin+self.label_len:r_end]], 0)
         else:
             seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end]
@@ -279,7 +283,7 @@ class Dataset_Custom(Dataset):
         return seq_x, seq_y, seq_x_mark, seq_y_mark
     
     def __len__(self):
-        return len(self.data_x) - self.seq_len- self.pred_len + 1
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
